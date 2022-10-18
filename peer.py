@@ -1,4 +1,4 @@
-import socket
+import socket, time
 
 
 def reply(fields):
@@ -10,7 +10,7 @@ def reply(fields):
     next_address, next_port = path.pop().split('-')
     fields[2] = ','.join(path)
     data = '|'.join(fields)
-    print('send data:', data)
+    # print('send data:', data)
     client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     client.connect((next_address, int(next_port)))
     client.send(data.encode('utf-8'))
@@ -21,14 +21,17 @@ def lookup(peer, fields):
     # request_category|product_id|path|hop_count
     fields[3] = f'{int(fields[3]) - 1}'
     # path = 'ip1-port1,ip2-port2,ip3-port3,ip4-port4...'
+    path = fields[2].split(',')
+    last_addr = path[-1]
     fields[2] = f'{fields[2]},{peer.address[0]}-{peer.address[1]}'
     data = '|'.join(fields)
-    print('send data:', data)
     for next_address in peer.connected_address:
-        client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        client.connect(next_address)
-        client.send(data.encode('utf-8'))
-        client.close()
+        if f'{next_address[0]}-{next_address[1]}' != last_addr:
+            client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            client.connect(next_address)
+            # print('send data:', data)
+            client.send(data.encode('utf-8'))
+            client.close()
 
 
 class Seller(object):
@@ -45,15 +48,18 @@ class Seller(object):
         self.server.listen(5)
 
     def process(self):
+        print('Start Seller thread.')
         while True:
+            time.sleep(1)
             conn, _ = self.server.accept()
             request = conn.recv(1024)
             data = request.decode('utf-8')
             # data: request_category|product_id|path|hop_count|(seller address)|(remaining_items)
-            print('receive data:', data)
+            # print('receive data:', data)
             fields = data.split('|')
             # 0: lookup request, 1: reply request ,2: buy request
             if fields[0] == '0':
+                # conn.send('Next peer receiving!'.encode('utf-8'))
                 # match product
                 if int(fields[1]) == self.product_id:
                     # change the request category
@@ -61,17 +67,20 @@ class Seller(object):
                     # append seller's address
                     fields.append(f'{self.address[0]}-{self.address[1]}')
                     # append seller's remaining amount of items
-                    fields.append(self.num_items)
+                    # fields.append(self.num_items)
                     reply(fields)
                 # not match, propagate
                 elif int(fields[3]) > 1:
-                    self.lookup(self, fields)
+                    print('Finding the seller for:', fields[1])
+                    lookup(self, fields)
             elif fields[0] == '1':
+                print('Now replying...')
                 reply(fields)
             elif fields[0] == '2':
                 # process buy request concurrently
                 self.num_items -= 1
-                pass
+                print('Remains', self.num_items, 'items in stock.')
+                # conn.send('Buying Sucessfully!'.encode('utf-8'))
             conn.close()
 
 
@@ -81,6 +90,11 @@ def buy(fields):
     seller_address, seller_port = fields[-1].split('-')
     client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     client.connect((seller_address, int(seller_port)))
+    client.send(fields[0].encode('utf-8'))
+    # status = client.recv(1024)
+    # status = status.decode('utf-8')
+    # print(status)
+    client.close()
 
     pass
 
@@ -100,22 +114,30 @@ class Buyer(object):
 
     def process(self):
         # send all requests
+        print('Start Buyer thread.')
         dic = self.init_lookup()
         # request_category|product_id|path|hop_count|seller_address(for reply message)
         while True:
+            time.sleep(1)
             conn, _ = self.server.accept()
             request = conn.recv(1024)
             data = request.decode('utf-8')
             fields = data.split('|')
             if fields[0] == '0':
+                # conn.send('Next peer receiving!'.encode('utf-8'))
                 if int(fields[3]) > 1:
+                    print('Finding the seller for:', fields[1])
                     lookup(self, fields)
             elif fields[0] == '1':
                 if fields[2] != '':
+                    print('Replying...')
                     reply(fields)
                 else:
+                    print('Now buying...')
                     buy(fields)
-        pass
+                    print('Buying sucessful!')
+
+        conn.close()
 
     def init_lookup(self):
         # request_category|product_id|path|hop_count|seller_address(for reply message)
@@ -131,5 +153,8 @@ class Buyer(object):
                 client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 client.connect(next_address)
                 client.send(request.encode('utf-8'))
+                # receive = client.recv(1024)
+                # receive = receive.decode('utf-8')
+                # print(receive)
                 client.close()
         return dic
