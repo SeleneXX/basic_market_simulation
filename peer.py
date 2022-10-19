@@ -53,7 +53,7 @@ class Seller(object):
         self.origin_num = num_items
         self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server.bind(address)
-        self.server.listen(1000)
+        self.server.listen(10000)
 
     def process(self):
         print('Start Seller:', self.peer_id)
@@ -129,7 +129,7 @@ class Buyer(object):
         self.hop_count = hop_count
         self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server.bind(address)
-        self.server.listen(1000)
+        self.server.listen(10000)
         self.success = [0] * len(request_items)
         self.request_buffer = [''] * len(request_items)
         self.request_times = [-1] * len(self.request_items)
@@ -175,14 +175,14 @@ class Buyer(object):
                                     client.close()
                                 lock.release()
                             else:
-                                Output = open(f'output{self.peer_id}.txt', mode='a')
-                                now = datetime.datetime.now()
-                                Output.write(f'{now.strftime("%Y-%m-%d %H:%M:%S")}, {self.peer_id} purchase product{pro_id} from {fields[-1]}!\n')
-                                Output.close()
+                                # Output = open(f'/test_data/output{self.peer_id}.txt', mode='a')
+                                # now = datetime.datetime.now()
+                                # Output.write(f'{now.strftime("%Y-%m-%d %H:%M:%S")}, {self.peer_id} purchase product{pro_id} from {fields[-1]}!\n')
+                                # Output.close()
                                 self.success[index] = 1
-                                # File = open(f'result{self.peer_id}.txt', mode='a')
-                                # File.write(f'{index}\t{self.reply_times[index]-self.request_times[index]}\n')
-                                # File.close()
+                                File = open(f'test_data/result{self.peer_id}-15.txt', mode='a')
+                                File.write(f'{index}\t{self.reply_times[index]-self.request_times[index]}\n')
+                                File.close()
                                 print(self.peer_id, '|| Request time:', self.reply_times[index]-self.request_times[index])
                 conn.close()
 

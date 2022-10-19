@@ -18,3 +18,8 @@
 2022-10-19 02:32:31, 2 purchase product0 from 1!
 2022-10-19 02:32:31, 2 purchase product0 from 1!
 2022-10-19 02:32:31, 2 purchase product1 from 6!
+
+
+
+
+
