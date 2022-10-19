@@ -1,4 +1,8 @@
-import socket, time
+import socket, time, random, datetime
+import threading
+
+sem = threading.Semaphore(20)
+lock = threading.Lock()
 
 
 def reply(fields):
@@ -26,12 +30,15 @@ def lookup(peer, fields):
     fields[2] = f'{fields[2]},{peer.address[0]}-{peer.address[1]}'
     data = '|'.join(fields)
     for next_address in peer.connected_address:
-        if f'{next_address[0]}-{next_address[1]}' != last_addr:
-            client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            client.connect(next_address)
-            # print('send data:', data)
-            client.send(data.encode('utf-8'))
-            client.close()
+        rand = random.randint(0,1)
+        if f'{next_address[0]}-{next_address[1]}' == last_addr and rand == 0:
+            continue
+
+        client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        client.connect(next_address)
+        # print('send data:', data)
+        client.send(data.encode('utf-8'))
+        client.close()
 
 
 class Seller(object):
@@ -43,60 +50,72 @@ class Seller(object):
         self.peer_id = peer_id
         self.product_id = product_id
         self.num_items = num_items
+        self.origin_num = num_items
         self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server.bind(address)
-        self.server.listen(5)
+        self.server.listen(1000)
 
     def process(self):
-        print('Start Seller thread.')
+        print('Start Seller:', self.peer_id)
         while True:
-            time.sleep(1)
-            conn, _ = self.server.accept()
-            request = conn.recv(1024)
-            data = request.decode('utf-8')
-            # data: request_category|product_id|path|hop_count|(seller address)|(remaining_items)
-            # print('receive data:', data)
-            fields = data.split('|')
-            # 0: lookup request, 1: reply request ,2: buy request
-            if fields[0] == '0':
-                # conn.send('Next peer receiving!'.encode('utf-8'))
-                # match product
-                if int(fields[1]) == self.product_id:
-                    # change the request category
-                    fields[0] = '1'
-                    # append seller's address
-                    fields.append(f'{self.address[0]}-{self.address[1]}')
-                    # append seller's remaining amount of items
-                    # fields.append(self.num_items)
+            with sem:
+                time.sleep(0.1)
+                conn, _ = self.server.accept()
+                request = conn.recv(1024)
+                data = request.decode('utf-8')
+                # data: request_category|product_id|path|hop_count|(seller address)|(remaining_items)|(peer_id)
+                # print('receive data:', data)
+                fields = data.split('|')
+                # 0: lookup request, 1: reply request ,2: buy request
+                if fields[0] == '0':
+                    # conn.send('Next peer receiving!'.encode('utf-8'))
+                    # match product
+                    request_product = fields[1].split('-')
+                    if int(request_product[0]) == self.product_id:
+                        # change the request category
+                        fields[0] = '1'
+                        # append seller's address
+                        fields.append(f'{self.address[0]}-{self.address[1]}')
+                        fields.append(str(self.peer_id))
+                        # append seller's remaining amount of items
+                        # fields.append(self.num_items)
+                        reply(fields)
+                    # not match, propagate
+                    elif int(fields[3]) > 1:
+                        lookup(self, fields)
+                elif fields[0] == '1':
                     reply(fields)
-                # not match, propagate
-                elif int(fields[3]) > 1:
-                    print('Finding the seller for:', fields[1])
-                    lookup(self, fields)
-            elif fields[0] == '1':
-                print('Now replying...')
-                reply(fields)
-            elif fields[0] == '2':
-                # process buy request concurrently
-                self.num_items -= 1
-                print('Remains', self.num_items, 'items in stock.')
-                # conn.send('Buying Sucessfully!'.encode('utf-8'))
-            conn.close()
+                elif fields[0] == '2':
+                    # process buy request concurrently
+                    lock.acquire()
+                    product_id,_ = fields[1].split('-')
+                    print("Product ID:", int(product_id), self.product_id)
+                    if int(product_id) == self.product_id:
+                        self.num_items -= 1
+                        print(self.peer_id, '|| remains', self.num_items, 'items in stock.')
+                        if self.num_items == 0:
+                            self.num_items = self.origin_num
+                            self.product_id = random.randint(0,2)
+                            print(self.peer_id, "|| change the selling product ID", self.product_id)
+                        conn.send('Successfully buying'.encode('utf-8'))
+                    else:
+                        conn.send('Failure.'.encode('utf-8'))
+                    lock.release()
+                conn.close()
 
 
 def buy(fields):
     # request_category|product_id|path|hop_count|seller_address(for reply message)
     fields[0] = '2'
-    seller_address, seller_port = fields[-1].split('-')
+    seller_address, seller_port = fields[-2].split('-')
     client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     client.connect((seller_address, int(seller_port)))
-    client.send(fields[0].encode('utf-8'))
-    # status = client.recv(1024)
-    # status = status.decode('utf-8')
-    # print(status)
+    data = '|'.join(fields)
+    client.send(data.encode('utf-8'))
+    status = client.recv(1024)
+    status = status.decode('utf-8')
     client.close()
-
-    pass
+    return -1 if status == 'Failure.' else time.time()
 
 
 class Buyer(object):
@@ -110,45 +129,70 @@ class Buyer(object):
         self.hop_count = hop_count
         self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server.bind(address)
-        self.server.listen(5)
+        self.server.listen(1000)
+        self.success = [0] * len(request_items)
+        self.request_buffer = [''] * len(request_items)
+        self.request_times = [-1] * len(self.request_items)
+        self.reply_times = [-1] * len(self.request_items)
 
     def process(self):
         # send all requests
-        print('Start Buyer thread.')
-        dic = self.init_lookup()
+        print('Start Buyer:', self.peer_id)
+        time.sleep(5)
+        self.init_lookup()
+        print(1)
         # request_category|product_id|path|hop_count|seller_address(for reply message)
         while True:
-            time.sleep(1)
-            conn, _ = self.server.accept()
-            request = conn.recv(1024)
-            data = request.decode('utf-8')
-            fields = data.split('|')
-            if fields[0] == '0':
-                # conn.send('Next peer receiving!'.encode('utf-8'))
-                if int(fields[3]) > 1:
-                    print('Finding the seller for:', fields[1])
-                    lookup(self, fields)
-            elif fields[0] == '1':
-                if fields[2] != '':
-                    print('Replying...')
-                    reply(fields)
-                else:
-                    print('Now buying...')
-                    buy(fields)
-                    print('Buying sucessful!')
-
-        conn.close()
+            with sem:
+                time.sleep(0.1)
+                conn, _ = self.server.accept()
+                request = conn.recv(1024)
+                data = request.decode('utf-8')
+                fields = data.split('|')
+                if fields[0] == '0':
+                    # conn.send('Next peer receiving!'.encode('utf-8'))
+                    if int(fields[3]) > 1:
+                        lookup(self, fields)
+                elif fields[0] == '1':
+                    if fields[2] != '':
+                        reply(fields)
+                    else:
+                        pro_id, index = fields[1].split('-')
+                        index = int(index)
+                        if not self.success[index]:
+                            print(self.peer_id, '|| Find the buyer', fields[-1])
+                            print(self.peer_id, '|| Now buying...')
+                            self.reply_times[index] = buy(fields)
+                            if self.reply_times[index] == -1:
+                                print(self.peer_id, '|| Purchase failed. Try again.')
+                                lock.acquire()
+                                self.reply_times[index] = -1
+                                self.request_times[index] = time.time()
+                                for next_address in self.connected_address:
+                                    client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                                    client.connect(next_address)
+                                    client.send(self.request_buffer[index].encode('utf-8'))
+                                    client.close()
+                                lock.release()
+                            else:
+                                Output = open(f'output{self.peer_id}.txt', mode='a')
+                                now = datetime.datetime.now()
+                                Output.write(f'{now.strftime("%Y-%m-%d %H:%M:%S")}, {self.peer_id} purchase product{pro_id} from {fields[-1]}!\n')
+                                Output.close()
+                                self.success[index] = 1
+                                # File = open(f'result{self.peer_id}.txt', mode='a')
+                                # File.write(f'{index}\t{self.reply_times[index]-self.request_times[index]}\n')
+                                # File.close()
+                                print(self.peer_id, '|| Request time:', self.reply_times[index]-self.request_times[index])
+                conn.close()
 
     def init_lookup(self):
         # request_category|product_id|path|hop_count|seller_address(for reply message)
-        dic = {}
-        for product_id in self.request_items:
+        for i, product_id in enumerate(self.request_items):
+            print("Seaching for:", product_id)
             # 0|product_id|address-port|hop_count
-            if product_id in dic:
-                dic[product_id] += 1
-            else:
-                dic[product_id] = 0
-            request = f'0|{product_id}|{self.address[0]}-{self.address[1]}|{self.hop_count}'
+            request = f'0|{product_id}-{i}|{self.address[0]}-{self.address[1]}|{self.hop_count}'
+            self.request_times[i] = time.time()
             for next_address in self.connected_address:
                 client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 client.connect(next_address)
@@ -157,4 +201,4 @@ class Buyer(object):
                 # receive = receive.decode('utf-8')
                 # print(receive)
                 client.close()
-        return dic
+            self.request_buffer[i] = request
